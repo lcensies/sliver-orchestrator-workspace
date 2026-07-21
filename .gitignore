@@ -1,0 +1,10 @@
+scenario-runner
+.vagrant/
+*.exe
+lab/bin/
+.vagrant/
+*.exe
+lab/bin/
+win10_custom.box
+scenario-server
+*.box

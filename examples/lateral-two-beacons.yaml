@@ -33,7 +33,7 @@ steps:
       type: command
       command:
         interpreter: sh
-        cmd: 'printf "%s\n" "ddfd3b70-3748-4117-9abb-b9c826d8872c"'
+        cmd: 'printf "%s\n" "4b96272f-aa05-4559-a196-f3453dad88f3"'
     output_var: peer_session
 
   - id: on_peer_hostname

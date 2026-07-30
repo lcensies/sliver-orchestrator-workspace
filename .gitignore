@@ -1,7 +1,12 @@
-# Atomics are fetched from upstream (Atomic Red Team), not committed here.
-/atomics/*
-!/atomics/README.md
-
-# Local build/scratch
+scenario-runner
+.vagrant/
+*.exe
+lab/bin/
+.vagrant/
+*.exe
+lab/bin/
+win10_custom.box
+scenario-server
+*.box
 *.log
-__pycache__/
+*.bak
